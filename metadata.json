@@ -1,0 +1,6 @@
+{
+  "name": "نظام أرشفة البريد والكتب الرسمية",
+  "description": "نظام مكتبي متكامل لأرشفة الكتب الصادرة والواردة، مع التعرف الضوئي التلقائي OCR على الختم الأزرق والخط اليدوي واستخراج الكلمات المفتاحية والبحث المتقدم وتصدير إكسل.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
