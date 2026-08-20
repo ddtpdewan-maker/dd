@@ -45,13 +45,33 @@ export function getInitialSeedLetters(): ArchivedLetter[] {
         { label: 'الموعد النهائي للتقرير', value: '2026/06/15' },
         { label: 'عدد صفحات المرفقات', value: '25 صفحة' },
       ],
+      followUpAssignees: [
+        {
+          entityName: 'دائرة الشؤون المالية والحسابات',
+          assignedAction: 'لصرف الدفعة الأولى وفق جدول التدفقات النقدية',
+          deadline: '2026/05/28',
+          status: 'قيد المتابعة',
+        },
+        {
+          entityName: 'قسم المشتريات والمناقصات المركزية',
+          assignedAction: 'لاستكمال إجراءات التعاقد والتوريد الفني',
+          deadline: '2026/06/05',
+          status: 'عاجل',
+        },
+        {
+          entityName: 'شعبة الدعم الفني والأرشفة',
+          assignedAction: 'لإعداد البنية التحتية وتوزيع الماسحات على المكاتب',
+          status: 'قيد المتابعة',
+        },
+      ],
+      attachments: ['جدول الكميات والمواصفات الفنية', 'محضر لجنة الفحص والترسية', 'كشف التدفق النقدي'],
       blueStamp: {
         detected: true,
         handwrittenIncomingNumber: '1452/و',
         handwrittenReceiptDate: '2026/05/20',
         stampPrintedText: 'وارد ديوان الوزارة العام - شعبة التسجيل والتوثيق الإلكتروني',
         confidence: 98,
-        notes: 'الختم الأزرق واضح جداً في أعلى يمين/يسار الصفحة الأولى مع كتابة يدوية صريحة وتوقيع الموظف المستلم.',
+        notes: 'الختم الأزرق واضح جداً في أعلى الصفحة مع كتابة يدوية صريحة وتوقيع الموظف المستلم.',
         boundingBox: {
           topPercent: 12.8,
           leftPercent: 7.5,
@@ -86,6 +106,19 @@ export function getInitialSeedLetters(): ArchivedLetter[] {
         { label: 'عدد الموظفين المتدربين', value: '45 موظف' },
         { label: 'نسبة الإنجاز', value: '100%' },
       ],
+      followUpAssignees: [
+        {
+          entityName: 'مدير مكتب الوزير',
+          assignedAction: 'للعرض على معالي الوزير والتوجيه',
+          status: 'مكتمل',
+        },
+        {
+          entityName: 'دائرة التطوير الإداري والتدريب',
+          assignedAction: 'لأرشفة تقارير المتدربين وإصدار الشهادات',
+          status: 'مكتمل',
+        },
+      ],
+      attachments: ['تقرير إحصائي تفصيلي عن تجربة النظام', 'قائمة بأسماء الموظفين المتدربين'],
       blueStamp: {
         detected: false,
         handwrittenIncomingNumber: '',
@@ -118,6 +151,20 @@ export function getInitialSeedLetters(): ArchivedLetter[] {
         { label: 'رقم الإشارة', value: 'هـ/رق/512' },
         { label: 'المهلة الزمنية للتطبيق', value: '30 يوماً' },
       ],
+      followUpAssignees: [
+        {
+          entityName: 'مسؤول الأمن السيبراني وضابط الامتثال',
+          assignedAction: 'لتطبيق السياسات وإجراء الفحص الأمني للأرشيف',
+          deadline: '2026/06/15',
+          status: 'قيد المتابعة',
+        },
+        {
+          entityName: 'مدراء الفروع والمحافظات',
+          assignedAction: 'للاطلاع والالتزام والتعميم على الأقسام',
+          status: 'قيد المتابعة',
+        },
+      ],
+      attachments: ['الدليل الإجرائي الموحد لأمن الوثائق الإلكترونية (نسخة معتمدة)'],
       blueStamp: {
         detected: true,
         handwrittenIncomingNumber: '2089/و',

@@ -37,6 +37,7 @@ export const AdvancedSearchModal: React.FC<AdvancedSearchModalProps> = ({
   const [onlyBlueStamp, setOnlyBlueStamp] = useState(false);
   const [senderEntity, setSenderEntity] = useState('');
   const [recipientEntity, setRecipientEntity] = useState('');
+  const [followUpAssignee, setFollowUpAssignee] = useState('');
 
   if (!isOpen) return null;
 
@@ -53,7 +54,21 @@ export const AdvancedSearchModal: React.FC<AdvancedSearchModalProps> = ({
       const matchNum = l.importantNumbers?.some(
         (n) => n.label.toLowerCase().includes(q) || n.value.toLowerCase().includes(q)
       );
-      if (!matchSub && !matchInc && !matchOut && !matchSum && !matchStamp && !matchKw && !matchNum) {
+      const matchAssignee = l.followUpAssignees?.some(
+        (a) =>
+          a.entityName.toLowerCase().includes(q) ||
+          a.assignedAction.toLowerCase().includes(q)
+      );
+      if (
+        !matchSub &&
+        !matchInc &&
+        !matchOut &&
+        !matchSum &&
+        !matchStamp &&
+        !matchKw &&
+        !matchNum &&
+        !matchAssignee
+      ) {
         return false;
       }
     }
@@ -72,6 +87,16 @@ export const AdvancedSearchModal: React.FC<AdvancedSearchModalProps> = ({
     ) {
       return false;
     }
+    if (
+      followUpAssignee.trim() &&
+      !l.followUpAssignees?.some(
+        (a) =>
+          a.entityName.toLowerCase().includes(followUpAssignee.toLowerCase()) ||
+          a.assignedAction.toLowerCase().includes(followUpAssignee.toLowerCase())
+      )
+    ) {
+      return false;
+    }
     return true;
   });
 
@@ -86,6 +111,7 @@ export const AdvancedSearchModal: React.FC<AdvancedSearchModalProps> = ({
       onlyBlueStamp,
       senderEntity: senderEntity.trim() || undefined,
       recipientEntity: recipientEntity.trim() || undefined,
+      followUpAssignee: followUpAssignee.trim() || undefined,
     });
     onClose();
   };
@@ -100,6 +126,7 @@ export const AdvancedSearchModal: React.FC<AdvancedSearchModalProps> = ({
     setOnlyBlueStamp(false);
     setSenderEntity('');
     setRecipientEntity('');
+    setFollowUpAssignee('');
   };
 
   const handleExportFiltered = () => {
@@ -206,6 +233,20 @@ export const AdvancedSearchModal: React.FC<AdvancedSearchModalProps> = ({
                 className="w-full px-3 py-2 rounded-xl border border-slate-300 text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
               />
             </div>
+          </div>
+
+          {/* Follow-up Assignee Search Field */}
+          <div>
+            <label className="block font-bold text-slate-700 mb-1">
+              اسم المتابع أو الجهة المكلفة بالإجراء (نسخة منه إلى / للتنفيذ والمتابعة)
+            </label>
+            <input
+              type="text"
+              value={followUpAssignee}
+              onChange={(e) => setFollowUpAssignee(e.target.value)}
+              placeholder="ابحث باسم الموظف المتابع أو الإدارة المكلفة..."
+              className="w-full px-3 py-2 rounded-xl border border-indigo-200 bg-indigo-50/40 text-slate-900 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+            />
           </div>
 
           {/* Date Range */}

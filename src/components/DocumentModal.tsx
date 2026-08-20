@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   X,
   Upload,
@@ -7,6 +7,7 @@ import {
   Sparkles,
   Stamp,
   CheckCircle,
+  AlertTriangle,
   AlertCircle,
   Tag,
   Hash,
@@ -22,15 +23,27 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCw,
+  Download,
+  Copy,
+  ChevronLeft,
+  ChevronRight,
+  ShieldAlert,
 } from 'lucide-react';
 import {
   ArchivedLetter,
   BlueStampData,
   DocumentType,
+  DuplicateCheckResult,
   ImportantNumber,
   PriorityLevel,
 } from '../types/archive';
-import { convertPdfToImages, generateSampleIncomingLetterCanvas } from '../utils/pdfHelper';
+import {
+  convertPdfToImages,
+  generateSampleIncomingLetterCanvas,
+  generateSampleLetterPage2Canvas,
+} from '../utils/pdfHelper';
+import { checkForDuplicateLetter } from '../utils/duplicateChecker';
+import { saveCompleteDocumentCopy } from '../utils/documentStorage';
 import { audioNotifier } from '../utils/audioNotification';
 
 interface DocumentModalProps {
@@ -38,6 +51,8 @@ interface DocumentModalProps {
   onClose: () => void;
   onSave: (letter: ArchivedLetter) => void;
   onOpenScannerTab?: () => void;
+  existingLetters?: ArchivedLetter[];
+  onViewExistingLetter?: (letter: ArchivedLetter) => void;
 }
 
 type Step = 'upload' | 'analyzing' | 'review';
@@ -47,18 +62,21 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
   onClose,
   onSave,
   onOpenScannerTab,
+  existingLetters = [],
+  onViewExistingLetter,
 }) => {
   const [step, setStep] = useState<Step>('upload');
   const [analysisProgress, setAnalysisProgress] = useState<string>('جاري قراءة ملف الـ PDF...');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Document Pages
+  // Document Pages & Full Complete Copy Data
   const [pageImages, setPageImages] = useState<string[]>([]);
   const [currentPageIndex, setCurrentPageIndex] = useState<number>(0);
   const [pdfFileName, setPdfFileName] = useState<string>('');
   const [pdfFileSize, setPdfFileSize] = useState<number>(0);
+  const [pdfDataUrl, setPdfDataUrl] = useState<string>('');
 
-  // Extracted and Editable Metadata
+  // AI Extracted and Editable Metadata
   const [docType, setDocType] = useState<DocumentType>('وارد');
   const [subject, setSubject] = useState<string>('');
   const [incomingNumber, setIncomingNumber] = useState<string>('');
@@ -84,12 +102,35 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
     handwrittenReceiptDate: '',
   });
 
+  // Allow saving even if duplicate is detected (explicit user confirmation)
+  const [allowDuplicateSave, setAllowDuplicateSave] = useState<boolean>(false);
+
   // Viewer controls
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [rotation, setRotation] = useState<number>(0);
-  const [highlightBlueStamp, setHighlightBlueStamp] = useState<boolean>(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Real-time Duplicate Checking
+  const duplicateResult: DuplicateCheckResult = useMemo(() => {
+    if (step !== 'review') {
+      return {
+        isDuplicate: false,
+        duplicateLetter: null,
+        matchType: 'none',
+        matchDescription: '',
+      };
+    }
+    return checkForDuplicateLetter(
+      {
+        incomingNumber,
+        outgoingNumber,
+        letterDate,
+        subject,
+      },
+      existingLetters
+    );
+  }, [step, incomingNumber, outgoingNumber, letterDate, subject, existingLetters]);
 
   if (!isOpen) return null;
 
@@ -99,6 +140,7 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
     setCurrentPageIndex(0);
     setPdfFileName('');
     setPdfFileSize(0);
+    setPdfDataUrl('');
     setSubject('');
     setIncomingNumber('');
     setOutgoingNumber('');
@@ -112,6 +154,7 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
     setActionRequired('');
     setKeywords([]);
     setImportantNumbers([]);
+    setAllowDuplicateSave(false);
     setBlueStamp({
       detected: false,
       handwrittenIncomingNumber: '',
@@ -122,38 +165,36 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
     setRotation(0);
   };
 
-  // Perform AI OCR and Blue Stamp extraction from the first 2 pages
+  // Perform AI OCR and full document extraction from the first 2 pages
   const processImagesForOcr = async (images: string[], originalFileName: string = 'document.pdf') => {
     try {
       setStep('analyzing');
       setErrorMessage(null);
+      setAllowDuplicateSave(false);
 
-      setAnalysisProgress('1/4 جاري معالجة أول صفحتين من المستند...');
-      await new Promise((r) => setTimeout(r, 600));
+      setAnalysisProgress('1/3 جاري معالجة صفحات المستند...');
+      await new Promise((r) => setTimeout(r, 400));
 
-      setAnalysisProgress('2/4 البحث عن الختم الأزرق والتعرف على الخط اليدوي...');
-      await new Promise((r) => setTimeout(r, 600));
+      setAnalysisProgress('2/3 البحث عن الختم الأزرق واستخراج الأرقام المكتوبة بخط اليد...');
+      await new Promise((r) => setTimeout(r, 400));
 
       // Call server OCR endpoint
       const response = await fetch('/api/ocr/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          images: images.slice(0, 2), // strictly first 2 pages
+          images: images.slice(0, 2), // first 2 pages for OCR
           fileName: originalFileName,
         }),
       });
 
-      setAnalysisProgress('3/4 استخراج الكلمات المفتاحية والأرقام والمبالغ الهامة...');
+      setAnalysisProgress('3/3 استخراج بيانات الموضوع، التواريخ، والكلمات المفتاحية...');
 
       const result = await response.json();
 
       if (!result.success || !result.data) {
         throw new Error(result.error || 'فشل استخراج البيانات من المستند');
       }
-
-      setAnalysisProgress('4/4 إعداد بطاقة المعاملة والمطابقة...');
-      await new Promise((r) => setTimeout(r, 400));
 
       const data = result.data;
 
@@ -209,13 +250,13 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
     } catch (err: any) {
       console.error('OCR Process error:', err);
       setErrorMessage(
-        err.message || 'حدث خطأ أثناء معالجة المستند. يرجى إعادة المحاولة أو إدخال البيانات يدوياً.'
+        err.message || 'حدث خطأ أثناء معالجة المستند. يرجى مراجعة البيانات وإدخالها يدوياً.'
       );
-      setStep('review'); // allow manual review anyway
+      setStep('review');
     }
   };
 
-  // Handle PDF file selection
+  // Handle PDF file selection - converts ALL pages so full complete copy is retained
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -226,9 +267,17 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
     try {
       if (file.type === 'application/pdf') {
         setStep('analyzing');
-        setAnalysisProgress('جاري استخراج الصفحات من ملف الـ PDF...');
+        setAnalysisProgress('جاري استخراج وحفظ صفحات النسخة الكاملة من الـ PDF...');
+        
+        // Read as Data URL for complete download copy
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          setPdfDataUrl(ev.target?.result as string);
+        };
+        reader.readAsDataURL(file);
+
         const arrayBuffer = await file.arrayBuffer();
-        const pages = await convertPdfToImages(arrayBuffer, 2);
+        const pages = await convertPdfToImages(arrayBuffer, 50); // extract full multi-page document
         if (pages.length === 0) {
           throw new Error('لم نتمكن من قراءة صفحات ملف الـ PDF');
         }
@@ -238,6 +287,7 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
         const reader = new FileReader();
         reader.onload = async (event) => {
           const imgData = event.target?.result as string;
+          setPdfDataUrl(imgData);
           setPageImages([imgData]);
           await processImagesForOcr([imgData], file.name);
         };
@@ -252,9 +302,9 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
     }
   };
 
-  // Load realistic sample letter with blue stamp for 1-click test
+  // Load realistic sample letter with full 2-page complete copy & blue stamp
   const handleLoadSample = async () => {
-    const sampleImg = generateSampleIncomingLetterCanvas(
+    const samplePage1 = generateSampleIncomingLetterCanvas(
       '1452/و',
       'وز/ت/892',
       '2026/05/18',
@@ -263,10 +313,14 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
       'وزارة التخطيط والمالية - الإدارة العامة للموازنة',
       'وزارة الاتصالات وتقنية المعلومات - دائرة نظم المعلومات'
     );
+    const samplePage2 = generateSampleLetterPage2Canvas('وز/ت/892', '2026/05/18');
+
+    const samplePages = [samplePage1, samplePage2];
     setPdfFileName('كتاب_وارد_ميزانية_الماسحات_1452.pdf');
     setPdfFileSize(412000);
-    setPageImages([sampleImg]);
-    await processImagesForOcr([sampleImg], 'كتاب_وارد_ميزانية_الماسحات_1452.pdf');
+    setPdfDataUrl(samplePage1);
+    setPageImages(samplePages);
+    await processImagesForOcr(samplePages, 'كتاب_وارد_ميزانية_الماسحات_1452.pdf');
   };
 
   // Add keyword tag
@@ -297,15 +351,26 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
     setImportantNumbers(importantNumbers.filter((_, i) => i !== index));
   };
 
-  // Save document to archive
-  const handleFinalSave = () => {
+  // Save document to archive and save complete copy to IndexedDB
+  const handleFinalSave = async () => {
     if (!subject.trim()) {
       alert('يرجى كتابة موضوع الكتاب الرسمي');
       return;
     }
 
+    // Duplicate check enforcement
+    if (duplicateResult.isDuplicate && !allowDuplicateSave) {
+      const confirmSave = window.confirm(
+        `تنبيه: تم اكتشاف وثيقة مكررة مسجلة مسبقاً (${duplicateResult.matchDescription}).\n\nهل ترغب في المتابعة وحفظ هذا الكتاب كنسخة إضافية/محدثة؟`
+      );
+      if (!confirmSave) {
+        return;
+      }
+    }
+
+    const letterId = `doc-${Date.now()}`;
     const newLetter: ArchivedLetter = {
-      id: `doc-${Date.now()}`,
+      id: letterId,
       type: docType,
       incomingNumber: incomingNumber || (docType === 'وارد' ? 'غير مسجل' : '-'),
       outgoingNumber: outgoingNumber || '-',
@@ -323,11 +388,28 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
       importantNumbers,
       blueStamp,
       pageImages,
+      pageCount: pageImages.length || 1,
       pdfFileName: pdfFileName || 'document.pdf',
       pdfFileSize: pdfFileSize || 102400,
+      pdfDataUrl: pdfDataUrl || (pageImages[0] || ''),
+      isDuplicateCopy: duplicateResult.isDuplicate,
+      duplicateOfId: duplicateResult.duplicateLetter?.id,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+
+    // Save complete multi-page copy in IndexedDB
+    try {
+      await saveCompleteDocumentCopy(letterId, {
+        fileName: newLetter.pdfFileName || 'document.pdf',
+        fileSize: newLetter.pdfFileSize || 102400,
+        pdfDataUrl: newLetter.pdfDataUrl || '',
+        pageImages: newLetter.pageImages,
+        pageCount: newLetter.pageImages.length || 1,
+      });
+    } catch (e) {
+      console.warn('Could not save to IndexedDB:', e);
+    }
 
     onSave(newLetter);
     resetForm();
@@ -345,15 +427,16 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-base text-slate-800 flex items-center gap-2">
-                <span>إضافة وأرشفة كتاب رسمي جديد</span>
+                <span>إضافة وأرشفة كتاب رسمي بالذكاء الاصطناعي</span>
                 {step === 'review' && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold border border-emerald-200">
-                    تم استخراج البيانات
+                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold border border-emerald-200 flex items-center gap-1">
+                    <Check className="w-3 h-3 text-emerald-600" />
+                    <span>تم الاستخراج الذكي التلقائي</span>
                   </span>
                 )}
               </h3>
               <p className="text-xs text-slate-500">
-                التعرف الضوئي التلقائي OCR على الختم الأزرق والخط اليدوي والكلمات المفتاحية
+                استخراج فوري لبيانات الكتاب، الختم الأزرق بالخط اليدوي، فحص التكرار، وحفظ نسخة كاملة
               </p>
             </div>
           </div>
@@ -370,556 +453,616 @@ export const DocumentModal: React.FC<DocumentModalProps> = ({
         </div>
 
         {/* Content Body */}
-        <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-          {step === 'upload' && (
-            <div className="flex-1 p-8 flex flex-col items-center justify-center overflow-y-auto">
-              <div className="max-w-xl w-full text-center space-y-6">
-                {/* Upload Box */}
-                <div
-                  onClick={() => fileInputRef.current?.click()}
-                  className="border-2 border-dashed border-blue-300 hover:border-blue-500 bg-blue-50/50 hover:bg-blue-50 rounded-3xl p-10 flex flex-col items-center justify-center cursor-pointer transition-all duration-200 group"
+        {step === 'upload' && (
+          <div className="flex-1 p-8 overflow-y-auto flex flex-col items-center justify-center max-w-2xl mx-auto text-center">
+            {/* Upload Zone */}
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full p-10 border-2 border-dashed border-blue-300 hover:border-blue-500 rounded-3xl bg-blue-50/40 hover:bg-blue-50/80 transition-all cursor-pointer flex flex-col items-center justify-center group"
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,image/png,image/jpeg,image/jpg"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+              <div className="w-16 h-16 rounded-2xl bg-blue-600 text-white flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-lg shadow-blue-500/25">
+                <Upload className="w-8 h-8" />
+              </div>
+              <h4 className="font-bold text-lg text-slate-800 mb-1">
+                اختر أو اسحب ملف الكتاب الرسمي (PDF)
+              </h4>
+              <p className="text-xs text-slate-500 max-w-md mb-4 leading-relaxed">
+                يقوم النظام تلقائياً باستخراج الموضوع، التواريخ، الأرقام الصادرة والواردة، وقراءة الختم الأزرق والخط اليدوي بواسطة الذكاء الاصطناعي مع حفظ نسخة كاملة لجميع الصفحات.
+              </p>
+              <span className="px-4 py-2 bg-blue-600 text-white text-xs font-bold rounded-xl shadow-md">
+                تصفح الملفات من جهازك
+              </span>
+            </div>
+
+            {/* Quick Actions Bar */}
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-3 w-full">
+              <button
+                onClick={handleLoadSample}
+                className="flex items-center gap-2 px-4 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-2xl border border-indigo-200 text-xs font-bold transition-all hover:scale-105 active:scale-95 cursor-pointer"
+              >
+                <Sparkles className="w-4 h-4 text-indigo-600" />
+                <span>تجربة نموذج كتاب كامل بختم أزرق متعدد الصفحات</span>
+              </button>
+
+              {onOpenScannerTab && (
+                <button
+                  onClick={() => {
+                    onClose();
+                    onOpenScannerTab();
+                  }}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl border border-slate-200 text-xs font-bold transition-all cursor-pointer"
                 >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="application/pdf,image/*"
-                    onChange={handleFileChange}
-                    className="hidden"
-                  />
-                  <div className="w-18 h-18 rounded-2xl bg-blue-600 text-white flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-lg shadow-blue-500/30">
-                    <Upload className="w-9 h-9" />
-                  </div>
-                  <h4 className="font-bold text-base text-slate-800 mb-1">
-                    اسحب وأفلت ملف الكتاب الرسمي (PDF) هنا
-                  </h4>
-                  <p className="text-xs text-slate-500 max-w-sm mb-4">
-                    أو انقر لاختيار ملف من جهازك. يدعم ملفات PDF متعددة الصفحات والصور الممسوحة ضوئياً.
-                  </p>
-                  <span className="px-4 py-2 bg-blue-600 text-white text-xs font-bold rounded-xl shadow-xs group-hover:bg-blue-700">
-                    اختيار ملف PDF / صورة
+                  <Scan className="w-4 h-4" />
+                  <span>المسح الضوئي المباشر من الكاميرا / Scanner</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Analyzing Animation Screen */}
+        {step === 'analyzing' && (
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-6">
+            <div className="relative">
+              <div className="w-24 h-24 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin" />
+              <div className="absolute inset-0 flex items-center justify-center text-blue-600">
+                <Sparkles className="w-10 h-10 animate-pulse" />
+              </div>
+            </div>
+            <div className="space-y-2 max-w-md">
+              <h4 className="font-bold text-lg text-slate-800">
+                جاري استخراج بيانات الكتاب بالذكاء الاصطناعي
+              </h4>
+              <p className="text-sm font-semibold text-blue-600">{analysisProgress}</p>
+              <p className="text-xs text-slate-400">
+                قراءة الأختام الزرقاء، التعرف على الأرقام والتواريخ المكتوبة يدوياً، وحفظ النسخة الكاملة
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Review & Edit Step */}
+        {step === 'review' && (
+          <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden divide-x divide-slate-200 divide-x-reverse">
+            {/* Left: Document View Screen (Full Copy Multi-page Viewer) */}
+            <div className="w-full md:w-5/12 bg-slate-950 flex flex-col min-h-0">
+              {/* Viewer Toolbar */}
+              <div className="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between text-white text-xs shrink-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-400 font-mono">
+                    صفحة {currentPageIndex + 1} من {pageImages.length || 1}
                   </span>
-                </div>
-
-                {/* Quick 1-Click Sample Testing */}
-                <div className="p-4 rounded-2xl bg-gradient-to-r from-indigo-50 to-blue-50 border border-indigo-200/80 flex items-center justify-between text-right">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center">
-                      <Sparkles className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h5 className="font-bold text-xs text-indigo-950">
-                        تريد اختبار الميزة فوراً بدون رفع ملف؟
-                      </h5>
-                      <p className="text-[11px] text-indigo-700">
-                        جرب نموذج كتاب وارد حقيقي يحتوي على ختم أزرق وخط يدوي.
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={handleLoadSample}
-                    className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-md shadow-indigo-500/20 transition-all hover:scale-105 active:scale-95 cursor-pointer shrink-0"
-                  >
-                    تجربة النموذج الآن
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {step === 'analyzing' && (
-            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-6">
-              <div className="relative">
-                <div className="w-24 h-24 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin" />
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <Stamp className="w-8 h-8 text-blue-600 animate-pulse" />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <h4 className="font-extrabold text-lg text-slate-800">
-                  الذكاء الاصطناعي يحلل الكتاب الرسمي...
-                </h4>
-                <p className="text-sm font-medium text-blue-700 font-mono animate-pulse">
-                  {analysisProgress}
-                </p>
-              </div>
-
-              <div className="max-w-md w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-600 text-right space-y-2">
-                <div className="font-bold text-slate-700 flex items-center gap-2">
-                  <CheckCircle className="w-4 h-4 text-emerald-600" />
-                  <span>التحليل يشمل أول صفحتين من الكتاب فقط</span>
-                </div>
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  يقوم النظام بالبحث البصري عن الختم الأزرق وقراءة رقم الوارد وتاريخ الاستلام المكتوبين بخط اليد بالـ OCR، بالإضافة لاستخراج الكلمات المفتاحية والأرقام والمبالغ الهامة.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {step === 'review' && (
-            <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden divide-x divide-slate-200 divide-x-reverse">
-              {/* Left Side: Document Preview with Blue Stamp Highlight */}
-              <div className="w-full md:w-1/2 bg-slate-900 flex flex-col min-h-0">
-                {/* Document Viewer Controls */}
-                <div className="p-3 bg-slate-950 border-b border-slate-800 flex items-center justify-between text-white text-xs shrink-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-slate-400 font-mono">
-                      صفحة {currentPageIndex + 1} من {pageImages.length || 1}
-                    </span>
-                    {pageImages.length > 1 && (
-                      <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-0.5">
-                        <button
-                          onClick={() => setCurrentPageIndex(0)}
-                          className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                            currentPageIndex === 0 ? 'bg-blue-600 text-white' : 'text-slate-300'
-                          }`}
-                        >
-                          ص 1
-                        </button>
-                        <button
-                          onClick={() => setCurrentPageIndex(1)}
-                          className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                            currentPageIndex === 1 ? 'bg-blue-600 text-white' : 'text-slate-300'
-                          }`}
-                        >
-                          ص 2
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {/* Blue stamp highlight toggle */}
-                    {blueStamp.detected && (
+                  {pageImages.length > 1 && (
+                    <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-0.5">
                       <button
-                        onClick={() => setHighlightBlueStamp(!highlightBlueStamp)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer transition-all ${
-                          highlightBlueStamp
-                            ? 'bg-blue-600 text-white shadow-xs'
-                            : 'bg-slate-800 text-slate-300'
-                        }`}
+                        onClick={() => setCurrentPageIndex((p) => Math.max(0, p - 1))}
+                        disabled={currentPageIndex === 0}
+                        className="p-1 rounded text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer"
+                        title="الصفحة السابقة"
                       >
-                        <Stamp className="w-3.5 h-3.5" />
-                        <span>تمييز الختم الأزرق</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
                       </button>
-                    )}
-
-                    <button
-                      onClick={() => setZoomLevel((z) => Math.min(z + 0.2, 2.5))}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
-                      title="تكبير"
-                    >
-                      <ZoomIn className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => setZoomLevel((z) => Math.max(z - 0.2, 0.6))}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
-                      title="تصغير"
-                    >
-                      <ZoomOut className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => setRotation((r) => (r + 90) % 360)}
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
-                      title="تدوير"
-                    >
-                      <RotateCw className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Document Display Canvas */}
-                <div className="flex-1 overflow-auto p-4 flex items-center justify-center min-h-0 bg-slate-950/90">
-                  {pageImages.length > 0 && (
-                    <div
-                      className="relative transition-transform duration-150 shadow-2xl"
-                      style={{
-                        transform: `scale(${zoomLevel}) rotate(${rotation}deg)`,
-                        transformOrigin: 'center center',
-                      }}
-                    >
-                      <img
-                        src={pageImages[currentPageIndex] || pageImages[0]}
-                        alt="معاينة المستند"
-                        className="max-h-[75vh] w-auto rounded-lg object-contain bg-white ring-1 ring-slate-700"
-                      />
-
-                      {/* Blue Stamp Bounding Box Overlay */}
-                      {blueStamp.detected && highlightBlueStamp && currentPageIndex === 0 && (
-                        <div
-                          className="absolute border-3 border-blue-500 bg-blue-500/20 rounded-md shadow-lg pointer-events-none animate-pulse"
-                          style={{
-                            top: `${blueStamp.boundingBox?.topPercent || 12.8}%`,
-                            left: `${blueStamp.boundingBox?.leftPercent || 7.5}%`,
-                            width: `${blueStamp.boundingBox?.widthPercent || 27}%`,
-                            height: `${blueStamp.boundingBox?.heightPercent || 10.5}%`,
-                          }}
+                      {pageImages.map((_, i) => (
+                        <button
+                          key={i}
+                          onClick={() => setCurrentPageIndex(i)}
+                          className={`px-2 py-0.5 rounded text-[11px] font-bold cursor-pointer ${
+                            currentPageIndex === i ? 'bg-blue-600 text-white' : 'text-slate-300'
+                          }`}
                         >
-                          <span className="absolute -top-6 right-0 bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-md">
-                            الختم الأزرق المكتشف
-                          </span>
-                        </div>
-                      )}
+                          ص {i + 1}
+                        </button>
+                      ))}
+                      <button
+                        onClick={() =>
+                          setCurrentPageIndex((p) => Math.min(pageImages.length - 1, p + 1))
+                        }
+                        disabled={currentPageIndex === pageImages.length - 1}
+                        className="p-1 rounded text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer"
+                        title="الصفحة التالية"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   )}
                 </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setZoomLevel((z) => Math.min(z + 0.2, 2.2))}
+                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                    title="تكبير"
+                  >
+                    <ZoomIn className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setZoomLevel((z) => Math.max(z - 0.2, 0.6))}
+                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                    title="تصغير"
+                  >
+                    <ZoomOut className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setRotation((r) => (r + 90) % 360)}
+                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                    title="تدوير"
+                  >
+                    <RotateCw className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
-              {/* Right Side: Verification and Editable Data Form */}
-              <div className="w-full md:w-1/2 flex flex-col min-h-0 bg-white">
-                <div className="flex-1 overflow-y-auto p-6 space-y-5">
-                  {/* Document Type Switcher */}
-                  <div className="flex items-center justify-between bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
-                    <button
-                      type="button"
-                      onClick={() => setDocType('وارد')}
-                      className={`flex-1 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                        docType === 'وارد'
-                          ? 'bg-blue-600 text-white shadow-md'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      <span>كتاب وارد (Incoming)</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDocType('صادر')}
-                      className={`flex-1 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                        docType === 'صادر'
-                          ? 'bg-amber-600 text-white shadow-md'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      <span>كتاب صادر (Outgoing)</span>
-                    </button>
-                  </div>
+              {/* Document Render Canvas */}
+              <div className="flex-1 overflow-auto p-4 flex items-center justify-center min-h-0 bg-slate-950">
+                {pageImages.length > 0 ? (
+                  <div
+                    className="relative transition-transform duration-150 shadow-2xl"
+                    style={{
+                      transform: `scale(${zoomLevel}) rotate(${rotation}deg)`,
+                    }}
+                  >
+                    <img
+                      src={pageImages[currentPageIndex] || pageImages[0]}
+                      alt={`معاينة الصفحة ${currentPageIndex + 1}`}
+                      className="max-h-[68vh] w-auto rounded-lg object-contain bg-white ring-1 ring-slate-800"
+                    />
 
-                  {/* 🟦 BLUE STAMP HANDWRITTEN CARD */}
-                  <div className="p-4 rounded-2xl bg-blue-50 border-2 border-blue-200 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-blue-900 font-extrabold text-sm">
-                        <Stamp className="w-5 h-5 text-blue-600" />
-                        <span>بيانات الختم الأزرق والخط اليدوي (OCR)</span>
-                      </div>
-                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-600 text-white">
-                        دقة: {blueStamp.confidence || 95}%
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[11px] font-bold text-blue-950 mb-1">
-                          رقم الوارد المكتوب بخط اليد:
-                        </label>
-                        <input
-                          type="text"
-                          value={blueStamp.handwrittenIncomingNumber}
-                          onChange={(e) => {
-                            setBlueStamp({
-                              ...blueStamp,
-                              handwrittenIncomingNumber: e.target.value,
-                              detected: true,
-                            });
-                            setIncomingNumber(e.target.value);
-                          }}
-                          placeholder="مثال: 1452/و"
-                          className="w-full px-3 py-2 rounded-xl bg-white border border-blue-300 font-bold font-mono text-sm text-blue-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-bold text-blue-950 mb-1">
-                          تاريخ الاستلام بالختم:
-                        </label>
-                        <input
-                          type="text"
-                          value={blueStamp.handwrittenReceiptDate}
-                          onChange={(e) => {
-                            setBlueStamp({
-                              ...blueStamp,
-                              handwrittenReceiptDate: e.target.value,
-                            });
-                            setReceiptDate(e.target.value);
-                          }}
-                          placeholder="مثال: 2026/05/20"
-                          className="w-full px-3 py-2 rounded-xl bg-white border border-blue-300 font-bold font-mono text-sm text-blue-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                        />
-                      </div>
-                    </div>
-
-                    {blueStamp.stampPrintedText && (
-                      <div className="text-[11px] text-blue-800 bg-blue-100/60 p-2 rounded-lg">
-                        <span className="font-bold">نص الختم المطبوع: </span>
-                        {blueStamp.stampPrintedText}
+                    {/* Stamp Bounding Box Highlight on Page 1 */}
+                    {blueStamp.detected && currentPageIndex === 0 && (
+                      <div
+                        className="absolute border-3 border-blue-500 bg-blue-500/20 rounded-md shadow-lg pointer-events-none"
+                        style={{
+                          top: `${blueStamp.boundingBox?.topPercent || 12.8}%`,
+                          left: `${blueStamp.boundingBox?.leftPercent || 7.5}%`,
+                          width: `${blueStamp.boundingBox?.widthPercent || 27}%`,
+                          height: `${blueStamp.boundingBox?.heightPercent || 10.5}%`,
+                        }}
+                      >
+                        <span className="absolute -top-6 right-0 bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-md whitespace-nowrap">
+                          الختم الأزرق: {blueStamp.handwrittenIncomingNumber}
+                        </span>
                       </div>
                     )}
                   </div>
+                ) : (
+                  <div className="text-slate-500 text-xs">لا تتوفر صورة للمستند</div>
+                )}
+              </div>
 
-                  {/* General Metadata Inputs */}
-                  <div className="space-y-3">
-                    {/* Subject */}
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        موضوع الكتاب الرسمي *
-                      </label>
-                      <input
-                        type="text"
-                        value={subject}
-                        onChange={(e) => setSubject(e.target.value)}
-                        placeholder="الموضوع الرئيسي للكتاب..."
-                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-bold text-sm text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                      />
-                    </div>
+              {/* Full copy info footer */}
+              <div className="p-2.5 bg-slate-900 border-t border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
+                <span>النسخة الكاملة: {pageImages.length} صفحات محفوظة</span>
+                <span className="font-mono text-slate-500">{pdfFileName}</span>
+              </div>
+            </div>
 
-                    {/* Numbers & Dates Grid */}
-                    <div className="grid grid-cols-2 gap-3">
+            {/* Right: Extracted Metadata Form */}
+            <div className="w-full md:w-7/12 bg-white flex flex-col min-h-0 overflow-y-auto p-6 space-y-4 text-xs">
+              {/* ⚠️ AUTOMATIC DUPLICATE DETECTION WARNING BANNER */}
+              {duplicateResult.isDuplicate && (
+                <div className="p-4 rounded-2xl bg-amber-50 border-2 border-amber-400 text-amber-900 shadow-md animate-in fade-in zoom-in-95 duration-150 space-y-2.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-2.5">
+                      <div className="p-1.5 rounded-xl bg-amber-200 text-amber-900 shrink-0 mt-0.5">
+                        <ShieldAlert className="w-5 h-5 text-amber-800" />
+                      </div>
                       <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">
-                          رقم الصادر / الإشارة
-                        </label>
-                        <input
-                          type="text"
-                          value={outgoingNumber}
-                          onChange={(e) => setOutgoingNumber(e.target.value)}
-                          placeholder="مثال: وز/ت/892"
-                          className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono text-xs text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">
-                          تاريخ الكتاب الرسمي
-                        </label>
-                        <input
-                          type="text"
-                          value={letterDate}
-                          onChange={(e) => setLetterDate(e.target.value)}
-                          placeholder="مثال: 2026/05/18"
-                          className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono text-xs text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                        />
+                        <h4 className="font-bold text-sm text-amber-900">
+                          تنبيه: تم العثور على وثيقة مكررة مسجلة مسبقاً!
+                        </h4>
+                        <p className="text-xs text-amber-800 mt-0.5">
+                          {duplicateResult.matchDescription}
+                        </p>
                       </div>
                     </div>
 
-                    {/* Entities */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">
-                          الجهة الصادرة (المرسل)
-                        </label>
-                        <input
-                          type="text"
-                          value={senderEntity}
-                          onChange={(e) => setSenderEntity(e.target.value)}
-                          placeholder="الوزارة / الهيئة المرسلة..."
-                          className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">
-                          الجهة الموجه إليها (المرسل إليه)
-                        </label>
-                        <input
-                          type="text"
-                          value={recipientEntity}
-                          onChange={(e) => setRecipientEntity(e.target.value)}
-                          placeholder="الجهة الموجه إليها..."
-                          className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Priority & Category */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">
-                          درجة الأهمية والسرية
-                        </label>
-                        <select
-                          value={priority}
-                          onChange={(e) => setPriority(e.target.value as PriorityLevel)}
-                          className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-medium text-slate-800 bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none cursor-pointer"
-                        >
-                          <option value="عادي">عادي</option>
-                          <option value="عاجل">عاجل</option>
-                          <option value="عاجل جداً">عاجل جداً</option>
-                          <option value="سري">سري</option>
-                          <option value="سري للغاية">سري للغاية</option>
-                          <option value="عاجل وسري للغاية">عاجل وسري للغاية</option>
-                          <option value="هام للمتابعة">هام للمتابعة</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">
-                          التصنيف الإداري
-                        </label>
-                        <input
-                          type="text"
-                          value={category}
-                          onChange={(e) => setCategory(e.target.value)}
-                          placeholder="مثال: مالي، إداري، مناقصات..."
-                          className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Keywords (First 2 Pages) */}
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        الكلمات المفتاحية المستخرجة (من أول صفحتين)
-                      </label>
-                      <div className="flex flex-wrap gap-1.5 p-2 bg-slate-50 border border-slate-200 rounded-xl mb-2 min-h-[42px]">
-                        {keywords.map((kw, i) => (
-                          <span
-                            key={i}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-100 text-blue-800 text-xs font-medium"
-                          >
-                            <span>#{kw}</span>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveKeyword(kw)}
-                              className="text-blue-500 hover:text-blue-800"
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={newKeywordInput}
-                          onChange={(e) => setNewKeywordInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              handleAddKeyword();
-                            }
-                          }}
-                          placeholder="إضافة كلمة مفتاحية جديدة والضغط على Enter..."
-                          className="flex-1 px-3 py-1.5 rounded-xl border border-slate-300 text-xs text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleAddKeyword}
-                          className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 rounded-xl text-xs font-bold text-slate-700"
-                        >
-                          إضافة
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Important Numbers & Amounts */}
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        الأرقام والمبالغ والمراجع الهامة
-                      </label>
-                      <div className="space-y-1.5 mb-2">
-                        {importantNumbers.map((num, idx) => (
-                          <div
-                            key={idx}
-                            className="flex items-center justify-between bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl text-xs"
-                          >
-                            <span className="font-semibold text-slate-600">{num.label}:</span>
-                            <span className="font-bold text-slate-900 font-mono">{num.value}</span>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveImportantNumber(idx)}
-                              className="text-red-500 hover:text-red-700"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={newNumberLabel}
-                          onChange={(e) => setNewNumberLabel(e.target.value)}
-                          placeholder="البيان (مثلاً: رقم القرار)"
-                          className="w-1/2 px-3 py-1.5 rounded-xl border border-slate-300 text-xs"
-                        />
-                        <input
-                          type="text"
-                          value={newNumberValue}
-                          onChange={(e) => setNewNumberValue(e.target.value)}
-                          placeholder="القيمة (مثلاً: 480,000)"
-                          className="w-1/2 px-3 py-1.5 rounded-xl border border-slate-300 text-xs font-mono"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleAddImportantNumber}
-                          className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 rounded-xl text-xs font-bold text-slate-700"
-                        >
-                          +
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Summary */}
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        الملخص التنفيذي لمضمون الكتاب
-                      </label>
-                      <textarea
-                        rows={3}
-                        value={summary}
-                        onChange={(e) => setSummary(e.target.value)}
-                        placeholder="ملخص موجز لأهم ما ورد في الكتاب..."
-                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-xs text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none leading-relaxed"
-                      />
-                    </div>
-
-                    {/* Action Required */}
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">
-                        الإجراء المطلوب
-                      </label>
-                      <input
-                        type="text"
-                        value={actionRequired}
-                        onChange={(e) => setActionRequired(e.target.value)}
-                        placeholder="مثال: اتخاذ اللازم، إعداد رد رسمي، حفظ في الملف..."
-                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                      />
-                    </div>
+                    {duplicateResult.duplicateLetter && onViewExistingLetter && (
+                      <button
+                        onClick={() => {
+                          if (duplicateResult.duplicateLetter) {
+                            onViewExistingLetter(duplicateResult.duplicateLetter);
+                          }
+                        }}
+                        className="px-3 py-1.5 bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-2xs cursor-pointer shrink-0"
+                      >
+                        <Eye className="w-3.5 h-3.5 text-amber-700" />
+                        <span>معاينة الوثيقة السابقة</span>
+                      </button>
+                    )}
                   </div>
+
+                  {duplicateResult.duplicateLetter && (
+                    <div className="p-2.5 bg-white/90 rounded-xl border border-amber-200 text-[11px] space-y-1">
+                      <div className="font-bold text-slate-800">
+                        الكتاب المسجل سابقاً: {duplicateResult.duplicateLetter.subject}
+                      </div>
+                      <div className="text-slate-600 font-mono flex flex-wrap gap-3">
+                        <span>رقم الوارد: {duplicateResult.duplicateLetter.incomingNumber}</span>
+                        <span>تاريخ الكتاب: {duplicateResult.duplicateLetter.letterDate}</span>
+                        <span>الجهة: {duplicateResult.duplicateLetter.senderEntity}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <label className="flex items-center gap-2 pt-1 cursor-pointer font-bold text-xs text-amber-900">
+                    <input
+                      type="checkbox"
+                      checked={allowDuplicateSave}
+                      onChange={(e) => setAllowDuplicateSave(e.target.checked)}
+                      className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500"
+                    />
+                    <span>الموافقة على الحفظ كنسخة إضافية / تحديث للكتاب في الأرشيف</span>
+                  </label>
+                </div>
+              )}
+
+              {errorMessage && (
+                <div className="p-3 rounded-2xl bg-red-50 border border-red-200 text-red-900 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                  <span>{errorMessage}</span>
+                </div>
+              )}
+
+              {/* 🟦 BLUE STAMP RECOGNITION HIGHLIGHT */}
+              <div
+                className={`p-4 rounded-2xl border-2 transition-all ${
+                  blueStamp.detected
+                    ? 'bg-blue-50/70 border-blue-300'
+                    : 'bg-slate-50 border-slate-200'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2 text-blue-900 font-extrabold text-sm">
+                    <Stamp className="w-5 h-5 text-blue-600" />
+                    <span>الختم الأزرق والتعرف على الخط اليدوي (OCR)</span>
+                  </div>
+                  <label className="flex items-center gap-1.5 text-xs cursor-pointer font-bold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={blueStamp.detected}
+                      onChange={(e) =>
+                        setBlueStamp({ ...blueStamp, detected: e.target.checked })
+                      }
+                      className="rounded text-blue-600 focus:ring-blue-500"
+                    />
+                    <span>تم كشف الختم الأزرق</span>
+                  </label>
                 </div>
 
-                {/* Footer Save Actions */}
-                <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setStep('upload')}
-                    className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors"
-                  >
-                    إعادة رفع مستند آخر
-                  </button>
+                {blueStamp.detected ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] font-bold text-blue-950 block mb-1">
+                        رقم الوارد المكتوب بخط اليد:
+                      </label>
+                      <input
+                        type="text"
+                        value={blueStamp.handwrittenIncomingNumber}
+                        onChange={(e) => {
+                          setBlueStamp({
+                            ...blueStamp,
+                            handwrittenIncomingNumber: e.target.value,
+                          });
+                          setIncomingNumber(e.target.value);
+                        }}
+                        placeholder="مثال: 1452/و"
+                        className="w-full px-3 py-1.5 rounded-xl border border-blue-300 bg-white font-mono font-bold text-blue-700 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      />
+                    </div>
 
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        resetForm();
-                        onClose();
-                      }}
-                      className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors"
-                    >
-                      إلغاء
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleFinalSave}
-                      className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-lg shadow-blue-500/25 transition-all hover:scale-105 active:scale-95 flex items-center gap-2 cursor-pointer"
-                    >
-                      <Check className="w-4 h-4" />
-                      <span>حفظ وأرشفة الكتاب رسمياً</span>
-                    </button>
+                    <div>
+                      <label className="text-[11px] font-bold text-blue-950 block mb-1">
+                        تاريخ الاستلام بالختم (خط يدوي):
+                      </label>
+                      <input
+                        type="text"
+                        value={blueStamp.handwrittenReceiptDate}
+                        onChange={(e) => {
+                          setBlueStamp({
+                            ...blueStamp,
+                            handwrittenReceiptDate: e.target.value,
+                          });
+                          setReceiptDate(e.target.value);
+                        }}
+                        placeholder="YYYY/MM/DD"
+                        className="w-full px-3 py-1.5 rounded-xl border border-blue-300 bg-white font-mono text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      />
+                    </div>
                   </div>
+                ) : (
+                  <p className="text-slate-500 text-xs">
+                    لم يتم العثور على ختم أزرق تلقائياً، يمكنك تفعيله وإدخال رقم الوارد يدوياً.
+                  </p>
+                )}
+              </div>
+
+              {/* Standard Form Inputs Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">نوع المعاملة:</label>
+                  <select
+                    value={docType}
+                    onChange={(e) => setDocType(e.target.value as DocumentType)}
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800"
+                  >
+                    <option value="وارد">كتاب وارد (Incoming)</option>
+                    <option value="صادر">كتاب صادر (Outgoing)</option>
+                    <option value="مذكرة داخلية">مذكرة داخلية</option>
+                    <option value="تعميم">تعميم / قرار</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">رقم الوارد:</label>
+                  <input
+                    type="text"
+                    value={incomingNumber}
+                    onChange={(e) => setIncomingNumber(e.target.value)}
+                    placeholder="رقم الوارد"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">رقم الصادر / الإشارة:</label>
+                  <input
+                    type="text"
+                    value={outgoingNumber}
+                    onChange={(e) => setOutgoingNumber(e.target.value)}
+                    placeholder="رقم الصادر"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold"
+                  />
                 </div>
               </div>
+
+              {/* Subject */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">موضوع الكتاب الرسمي:</label>
+                <input
+                  type="text"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  placeholder="موضوع الكتاب..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 text-sm focus:bg-white focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              {/* Sender & Recipient Entities */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">الجهة الصادرة (المرسل):</label>
+                  <input
+                    type="text"
+                    value={senderEntity}
+                    onChange={(e) => setSenderEntity(e.target.value)}
+                    placeholder="اسم الوزارة / الإدارة..."
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">الجهة الموجه إليها:</label>
+                  <input
+                    type="text"
+                    value={recipientEntity}
+                    onChange={(e) => setRecipientEntity(e.target.value)}
+                    placeholder="الجهة الموجه إليها..."
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl"
+                  />
+                </div>
+              </div>
+
+              {/* Dates & Priority */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">تاريخ الكتاب:</label>
+                  <input
+                    type="text"
+                    value={letterDate}
+                    onChange={(e) => setLetterDate(e.target.value)}
+                    placeholder="YYYY/MM/DD"
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">درجة الأهمية والسرية:</label>
+                  <select
+                    value={priority}
+                    onChange={(e) => setPriority(e.target.value as PriorityLevel)}
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl font-semibold"
+                  >
+                    <option value="عادي">عادي</option>
+                    <option value="عاجل">عاجل</option>
+                    <option value="عاجل جداً">عاجل جداً</option>
+                    <option value="سري">سري</option>
+                    <option value="سري للغاية">سري للغاية</option>
+                    <option value="عاجل وسري للغاية">عاجل وسري للغاية</option>
+                    <option value="هام للمتابعة">هام للمتابعة</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">التصنيف الموضوعي:</label>
+                  <select
+                    value={category}
+                    onChange={(e) => setCategory(e.target.value)}
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl"
+                  >
+                    <option value="إداري">إداري</option>
+                    <option value="مالي">مالي</option>
+                    <option value="قانوني">قانوني</option>
+                    <option value="تعاميم وقرارات">تعاميم وقرارات</option>
+                    <option value="مناقصات وتوريدات">مناقصات وتوريدات</option>
+                    <option value="شؤون فنية وتكنولوجيا">شؤون فنية وتكنولوجيا</option>
+                    <option value="موارد بشرية">موارد بشرية</option>
+                    <option value="أخرى">أخرى</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Keywords Tagging */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1.5 flex items-center gap-1">
+                  <Tag className="w-3.5 h-3.5 text-blue-600" />
+                  <span>الكلمات المفتاحية المستخرجة (AI Keywords):</span>
+                </label>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {keywords.map((kw, idx) => (
+                    <span
+                      key={idx}
+                      className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800 font-semibold text-xs border border-blue-200 flex items-center gap-1"
+                    >
+                      <span>#{kw}</span>
+                      <button
+                        onClick={() => handleRemoveKeyword(kw)}
+                        className="hover:text-red-600 font-bold ml-1 cursor-pointer"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newKeywordInput}
+                    onChange={(e) => setNewKeywordInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddKeyword()}
+                    placeholder="إضافة كلمة مفتاحية جديدة..."
+                    className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-xl"
+                  />
+                  <button
+                    onClick={handleAddKeyword}
+                    className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold"
+                  >
+                    + إضافة
+                  </button>
+                </div>
+              </div>
+
+              {/* Important Numbers */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1.5 flex items-center gap-1">
+                  <Hash className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>الأرقام والمبالغ والقرارات الهامة المستخرجة:</span>
+                </label>
+                <div className="space-y-1.5 mb-2">
+                  {importantNumbers.map((item, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center justify-between p-2 rounded-xl bg-slate-50 border border-slate-200 font-mono text-xs"
+                    >
+                      <span className="font-sans text-slate-600">{item.label}:</span>
+                      <span className="font-bold text-slate-900">{item.value}</span>
+                      <button
+                        onClick={() => handleRemoveImportantNumber(idx)}
+                        className="text-red-400 hover:text-red-600 font-sans cursor-pointer"
+                      >
+                        حذف
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newNumberLabel}
+                    onChange={(e) => setNewNumberLabel(e.target.value)}
+                    placeholder="بيان الرقم (مثل: مبلغ الميزانية)"
+                    className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-xl"
+                  />
+                  <input
+                    type="text"
+                    value={newNumberValue}
+                    onChange={(e) => setNewNumberValue(e.target.value)}
+                    placeholder="القيمة (مثال: 480,000 ريال)"
+                    className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-xl font-mono"
+                  />
+                  <button
+                    onClick={handleAddImportantNumber}
+                    className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold"
+                  >
+                    + إضافة
+                  </button>
+                </div>
+              </div>
+
+              {/* Summary */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  الملخص التنفيذي لمحتوى الكتاب (AI Summary):
+                </label>
+                <textarea
+                  rows={2}
+                  value={summary}
+                  onChange={(e) => setSummary(e.target.value)}
+                  placeholder="ملخص محتوى الكتاب الرسمي..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl leading-relaxed"
+                />
+              </div>
+
+              {/* Action Required */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  الإجراء المطلوب والتوجيه:
+                </label>
+                <input
+                  type="text"
+                  value={actionRequired}
+                  onChange={(e) => setActionRequired(e.target.value)}
+                  placeholder="الإجراء المقترح..."
+                  className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Footer Actions */}
+        <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
+          <button
+            onClick={() => {
+              resetForm();
+              onClose();
+            }}
+            className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+          >
+            إلغاء
+          </button>
+
+          {step === 'review' && (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setStep('upload')}
+                className="flex items-center gap-1 px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>إعادة المسح والرفع</span>
+              </button>
+
+              <button
+                onClick={handleFinalSave}
+                className={`flex items-center gap-2 px-6 py-2.5 text-xs font-bold text-white rounded-2xl shadow-lg transition-all hover:scale-105 active:scale-95 cursor-pointer ${
+                  duplicateResult.isDuplicate && !allowDuplicateSave
+                    ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-500/25'
+                    : 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/25'
+                }`}
+              >
+                <CheckCircle className="w-4 h-4" />
+                <span>
+                  {duplicateResult.isDuplicate && !allowDuplicateSave
+                    ? 'تأكيد الحفظ رغم التكرار'
+                    : 'حفظ وأرشفة النسخة الكاملة'}
+                </span>
+              </button>
             </div>
           )}
         </div>

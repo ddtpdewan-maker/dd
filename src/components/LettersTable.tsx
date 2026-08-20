@@ -215,12 +215,24 @@ export const LettersTable: React.FC<LettersTableProps> = ({
 
                         {/* Subject & Entity */}
                         <td className="p-3.5 max-w-xs">
-                          <div className="font-bold text-gray-900 line-clamp-1 group-hover:text-blue-600 transition-colors">
-                            {letter.subject}
+                          <div className="font-bold text-gray-900 line-clamp-1 group-hover:text-blue-600 transition-colors flex items-center gap-1.5">
+                            <span className="truncate">{letter.subject}</span>
+                            {letter.isDuplicateCopy && (
+                              <span className="shrink-0 px-1.5 py-0.2 text-[9px] font-bold bg-amber-100 text-amber-800 rounded border border-amber-300">
+                                نسخة إضافية
+                              </span>
+                            )}
                           </div>
-                          <div className="text-[11px] text-gray-500 line-clamp-1 mt-0.5 flex items-center gap-1">
-                            <Building2 className="w-3 h-3 text-gray-400 shrink-0" />
-                            <span>{letter.senderEntity || letter.recipientEntity || 'جهة رسمية'}</span>
+                          <div className="text-[11px] text-gray-500 line-clamp-1 mt-0.5 flex items-center gap-2">
+                            <span className="flex items-center gap-1">
+                              <Building2 className="w-3 h-3 text-gray-400 shrink-0" />
+                              <span>{letter.senderEntity || letter.recipientEntity || 'جهة رسمية'}</span>
+                            </span>
+                            {letter.pageImages && letter.pageImages.length > 1 && (
+                              <span className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.2 rounded font-mono font-semibold">
+                                {letter.pageImages.length} صفحات
+                              </span>
+                            )}
                           </div>
                         </td>
 

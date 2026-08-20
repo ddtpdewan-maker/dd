@@ -33,6 +33,10 @@ export function exportLettersToExcel(letters: ArchivedLetter[], options: ExportO
       'الختم الأزرق والخط اليدوي': item.blueStamp?.detected
         ? `نعم (رقم الوارد اليدوي: ${item.blueStamp.handwrittenIncomingNumber || '-'} | تاريخ: ${item.blueStamp.handwrittenReceiptDate || '-'})`
         : 'لا يوجد',
+      'المتابعون والمكلفون بالإجراء (AI)': (item.followUpAssignees || [])
+        .map((a) => `${a.entityName} [${a.assignedAction}${a.deadline ? ` - موعد: ${a.deadline}` : ''}]`)
+        .join(' | ') || '-',
+      'المرافقات والمرفقات': (item.attachments || []).join(' ، ') || '-',
       'الكلمات المفتاحية': (item.keywords || []).join(' ، '),
       'الأرقام والمبالغ الهامة': (item.importantNumbers || [])
         .map((num) => `${num.label}: ${num.value}`)

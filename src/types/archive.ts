@@ -31,6 +31,13 @@ export interface ImportantNumber {
   value: string;
 }
 
+export interface FollowUpAssignee {
+  entityName: string;
+  assignedAction: string;
+  deadline?: string;
+  status?: 'قيد المتابعة' | 'مكتمل' | 'عاجل';
+}
+
 export interface ArchivedLetter {
   id: string;
   type: DocumentType;
@@ -46,17 +53,30 @@ export interface ArchivedLetter {
   status: DocumentStatus; // حالة الكتاب
   summary: string; // الملخص التنفيذي
   actionRequired?: string; // الإجراء المطلوب
-  keywords: string[]; // الكلمات المفتاحية (أول صفحتين)
+  keywords: string[]; // الكلمات المفتاحية المستخرجة
   importantNumbers: ImportantNumber[]; // الأرقام والمبالغ الهامة
+  followUpAssignees?: FollowUpAssignee[]; // قائمة المتابعين
+  attachments?: string[]; // المرافقات والمرفقات
+  followUpNotes?: string;
   blueStamp: BlueStampData; // تفاصيل الختم الأزرق والخط اليدوي
-  pageImages: string[]; // صور الصفحتين الأوليين (Data URLs أو صور معاينة)
+  pageImages: string[]; // جميع صور صفحات الكتاب للنسخة الكاملة
+  pageCount?: number; // إجمالي عدد صفحات الكتاب الكامل
   pdfFileName?: string;
   pdfFileSize?: number;
-  pdfDataUrl?: string;
+  pdfDataUrl?: string; // بيانات الملف الكاملة
+  isDuplicateCopy?: boolean; // هل تم حفظه كنسخة مكررة مقبولة
+  duplicateOfId?: string; // معرّف الكتاب الأصلي إن وجد
   extractedSnippet?: string;
   notes?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface DuplicateCheckResult {
+  isDuplicate: boolean;
+  duplicateLetter: ArchivedLetter | null;
+  matchType: 'incomingNumber' | 'outgoingNumber' | 'exactMatch' | 'subjectAndDate' | 'none';
+  matchDescription: string;
 }
 
 export interface LetterFilter {
@@ -71,6 +91,7 @@ export interface LetterFilter {
   senderEntity?: string;
   recipientEntity?: string;
   hasImportantNumbers?: boolean;
+  followUpAssignee?: string;
 }
 
 export interface NotificationItem {

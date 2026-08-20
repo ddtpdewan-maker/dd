@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -138,6 +139,41 @@ const ocrExtractionSchema = {
       },
       description: 'قائمة بالأرقام والمبالغ والتواريخ والمراجع المهمة المستخرجة من أول صفحتين',
     },
+    followUpAssignees: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          entityName: {
+            type: Type.STRING,
+            description: 'اسم الجهة أو الإدارة أو الموظف المتابع / المعطوف عليه (نسخة منه إلى / المكلف بالمتابعة)',
+          },
+          assignedAction: {
+            type: Type.STRING,
+            description: 'الإجراء أو التوجيه المطلوب من المتابع (مثال: للمتابعة وإجراء اللازم، للتنفيذ، لإبداء الرأي، للاطلاع، لإعداد مذكرة)',
+          },
+          deadline: {
+            type: Type.STRING,
+            description: 'الموعد النهائي أو مدة الإنجاز المحددة للمتابعة إن ذكرت (مثال: خلال أسبوع، قبل تاريخ 2026/06/01)',
+          },
+          status: {
+            type: Type.STRING,
+            description: "حالة المتابعة: 'قيد المتابعة' أو 'مكتمل' أو 'عاجل'",
+          },
+        },
+        required: ['entityName', 'assignedAction'],
+      },
+      description: 'قائمة السادة المتابعين والجهات المكلفة بالمتابعة والتنفيذ المستخرجة تلقائياً من الكتاب (نسخة منه إلى / للتفضل بالعلم والمتابعة / تأشيرات المتابعة)',
+    },
+    attachments: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: 'قائمة المرافقات والمرفقات المذكورة في الكتاب الرسمي (مثل: كشف حساب، دراسة جدوى، جدول كميات، محضر اجتماع)',
+    },
+    followUpNotes: {
+      type: Type.STRING,
+      description: 'توجيهات المتابعة والتأشيرات الرئاسية أو الملاحظات الخاصة بمسار المعاملة',
+    },
     summary: {
       type: Type.STRING,
       description: 'ملخص موجز ودقيق لمضمون الكتاب الرسمي في 2-3 جمل واضحة باللغة العربية',
@@ -198,8 +234,11 @@ app.post('/api/ocr/analyze', async (req, res) => {
    - حدد مكان الختم الأزرق التقريبي (boundingBox) كنسب مئوية من حجم الصفحة.
 5. استخراج الكلمات المفتاحية الرئيسية (Keywords) التي تميز هذا الكتاب لتمكين البحث السريع والذكي.
 6. استخراج الأرقام المهمة (أرقام قرارات، مواد قانونية، مبالغ مالية، نسب، أرقام ملفات أو حسابات).
-7. كتابة ملخص تنفيذي موجز ومهني لمضمون الكتاب في جملتين أو ثلاث.
-8. تحديد درجة الأهمية / السرية (عادي، عاجل، سري، إلخ) والإجراء المقترح.
+7. استخراج قائمة "المتابعين والمكلفين بالإجراء" (نسخة منه إلى / للتفضل بالعلم والمتابعة والتنفيذ / السادة المتابعين):
+   - حدد كل جهة أو شخص متابع، والتوجيه أو الإجراء المكلف به (للمتابعة، للتنفيذ، لإبداء الرأي، للاطلاع، إلخ)، والموعد النهائي إن وجد.
+8. استخراج قائمة "المرافقات والمرفقات" (المرفقات المذكورة في الكتاب مثل: كشوفات، محاضر، تقارير).
+9. كتابة ملخص تنفيذي موجز ومهني لمضمون الكتاب في جملتين أو ثلاث.
+10. تحديد درجة الأهمية / السرية (عادي، عاجل، سري، إلخ) والإجراء المقترح العام.
 
 تنبيه: التزم بتحليل أول صفحتين فقط، وأرجع البيانات بتنسيق JSON مطابق للمخطط المطلوب.`;
 
@@ -288,18 +327,23 @@ app.get('/api/health', (req, res) => {
 
 // Setup Vite middleware in dev or static files in production
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+  const distPath = path.join(__dirname, 'dist');
+  const indexPath = path.join(distPath, 'index.html');
+  const hasDist = fs.existsSync(indexPath);
+
+  if (process.env.NODE_ENV === 'production' && hasDist) {
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(indexPath);
+    });
+  } else {
+    // If not in production or dist hasn't been built yet, use Vite middleware on the fly
     const { createServer } = await import('vite');
     const vite = await createServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-    });
   }
 
   app.listen(PORT, '0.0.0.0', () => {

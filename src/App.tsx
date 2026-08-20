@@ -388,6 +388,11 @@ export default function App() {
         isOpen={isNewDocModalOpen}
         onClose={() => setIsNewDocModalOpen(false)}
         onSave={handleSaveLetter}
+        existingLetters={letters}
+        onViewExistingLetter={(existingLetter) => {
+          setSelectedLetter(existingLetter);
+          setIsViewerModalOpen(true);
+        }}
         onOpenScannerTab={() => {
           setIsNewDocModalOpen(false);
           setIsScannerModalOpen(true);

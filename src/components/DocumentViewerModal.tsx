@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Printer,
@@ -21,9 +21,20 @@ import {
   Inbox,
   Send,
   Sparkles,
+  Users,
+  Paperclip,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  ShieldAlert,
+  FileDown,
 } from 'lucide-react';
 import { ArchivedLetter } from '../types/archive';
 import { exportLettersToExcel } from '../utils/excelExport';
+import {
+  downloadCompleteDocument,
+  getCompleteDocumentCopy,
+} from '../utils/documentStorage';
 
 interface DocumentViewerModalProps {
   letter: ArchivedLetter | null;
@@ -43,6 +54,37 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   const [rotation, setRotation] = useState<number>(0);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [focusStamp, setFocusStamp] = useState<boolean>(false);
+  const [fullPages, setFullPages] = useState<string[]>([]);
+  const [isDownloading, setIsDownloading] = useState<boolean>(false);
+
+  // Load complete pages from IndexedDB or letter object
+  useEffect(() => {
+    if (!letter) return;
+    setCurrentPage(0);
+    setZoomLevel(1);
+    setRotation(0);
+    setFocusStamp(false);
+
+    let active = true;
+    const loadFullDoc = async () => {
+      if (letter.pageImages && letter.pageImages.length > 0) {
+        setFullPages(letter.pageImages);
+      }
+      try {
+        const stored = await getCompleteDocumentCopy(letter.id);
+        if (stored && stored.pageImages && stored.pageImages.length > 0 && active) {
+          setFullPages(stored.pageImages);
+        }
+      } catch (e) {
+        console.warn('Error fetching full copy:', e);
+      }
+    };
+    loadFullDoc();
+
+    return () => {
+      active = false;
+    };
+  }, [letter]);
 
   if (!isOpen || !letter) return null;
 
@@ -62,11 +104,38 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     });
   };
 
+  // Download complete document copy (PDF or page image)
+  const handleDownloadFullCopy = async () => {
+    setIsDownloading(true);
+    try {
+      const stored = await getCompleteDocumentCopy(letter.id);
+      const downloadData =
+        stored?.pdfDataUrl || letter.pdfDataUrl || letter.pageImages?.[0] || '';
+      
+      const fileName =
+        stored?.fileName ||
+        letter.pdfFileName ||
+        `نسخة_كاملة_كتاب_${letter.type}_${letter.incomingNumber || letter.outgoingNumber}.pdf`;
+
+      if (downloadData) {
+        downloadCompleteDocument(fileName, downloadData);
+      } else {
+        alert('لا تتوفر نسخة إلكترونية قابلة للتنزيل لهذا المستند');
+      }
+    } catch (e) {
+      console.error('Download error:', e);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
   const handleZoomToStamp = () => {
     setFocusStamp(true);
     setZoomLevel(1.8);
     setCurrentPage(0);
   };
+
+  const pagesToDisplay = fullPages.length > 0 ? fullPages : letter.pageImages || [];
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4">
@@ -97,6 +166,13 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 >
                   كتاب {letter.type}
                 </span>
+
+                {letter.isDuplicateCopy && (
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold border border-amber-300 flex items-center gap-1">
+                    <ShieldAlert className="w-3 h-3 text-amber-700" />
+                    <span>نسخة إضافية مسجلة</span>
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-500 font-mono">
                 رقم الوارد: {letter.incomingNumber || '-'} | رقم الصادر: {letter.outgoingNumber || '-'} | تاريخ: {letter.letterDate}
@@ -105,6 +181,17 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Download Complete Copy Button */}
+            <button
+              onClick={handleDownloadFullCopy}
+              disabled={isDownloading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-md shadow-blue-500/20 cursor-pointer"
+              title="تحميل النسخة الكاملة لجميع صفحات الكتاب"
+            >
+              <FileDown className="w-4 h-4" />
+              <span>تحميل النسخة الكاملة (PDF)</span>
+            </button>
+
             <button
               onClick={handleExportSingle}
               className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-all cursor-pointer"
@@ -133,27 +220,45 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
 
         {/* Modal Split View */}
         <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden divide-x divide-slate-200 divide-x-reverse">
-          {/* Left: Document View Screen */}
+          {/* Left: Complete Document Multi-page Viewer */}
           <div className="w-full md:w-7/12 bg-slate-950 flex flex-col min-h-0">
             {/* Viewer Controls */}
             <div className="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between text-white text-xs shrink-0">
               <div className="flex items-center gap-2">
                 <span className="text-slate-400 font-mono">
-                  صفحة {currentPage + 1} من {letter.pageImages?.length || 1}
+                  صفحة {currentPage + 1} من {pagesToDisplay.length || 1}
                 </span>
-                {letter.pageImages && letter.pageImages.length > 1 && (
+                {pagesToDisplay.length > 1 && (
                   <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-0.5">
-                    {letter.pageImages.map((_, i) => (
+                    <button
+                      onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
+                      disabled={currentPage === 0}
+                      className="p-1 rounded text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer"
+                      title="الصفحة السابقة"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                    {pagesToDisplay.map((_, i) => (
                       <button
                         key={i}
                         onClick={() => setCurrentPage(i)}
-                        className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold cursor-pointer ${
                           currentPage === i ? 'bg-blue-600 text-white' : 'text-slate-300'
                         }`}
                       >
                         ص {i + 1}
                       </button>
                     ))}
+                    <button
+                      onClick={() =>
+                        setCurrentPage((p) => Math.min(pagesToDisplay.length - 1, p + 1))
+                      }
+                      disabled={currentPage === pagesToDisplay.length - 1}
+                      className="p-1 rounded text-slate-400 hover:text-white disabled:opacity-30 cursor-pointer"
+                      title="الصفحة التالية"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 )}
               </div>
@@ -174,7 +279,7 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                     setZoomLevel((z) => Math.min(z + 0.25, 2.5));
                     setFocusStamp(false);
                   }}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
                   title="تكبير"
                 >
                   <ZoomIn className="w-4 h-4" />
@@ -184,14 +289,14 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                     setZoomLevel((z) => Math.max(z - 0.25, 0.6));
                     setFocusStamp(false);
                   }}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
                   title="تصغير"
                 >
                   <ZoomOut className="w-4 h-4" />
                 </button>
                 <button
                   onClick={() => setRotation((r) => (r + 90) % 360)}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
                   title="تدوير"
                 >
                   <RotateCw className="w-4 h-4" />
@@ -201,7 +306,7 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
 
             {/* Document Image Container */}
             <div className="flex-1 overflow-auto p-4 flex items-center justify-center min-h-0 bg-slate-950">
-              {letter.pageImages && letter.pageImages.length > 0 ? (
+              {pagesToDisplay.length > 0 ? (
                 <div
                   className="relative transition-transform duration-200 shadow-2xl"
                   style={{
@@ -210,12 +315,12 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   }}
                 >
                   <img
-                    src={letter.pageImages[currentPage] || letter.pageImages[0]}
-                    alt="صورة الكتاب الرسمي"
+                    src={pagesToDisplay[currentPage] || pagesToDisplay[0]}
+                    alt={`صورة الكتاب الرسمي - صفحة ${currentPage + 1}`}
                     className="max-h-[75vh] w-auto rounded-lg object-contain bg-white ring-1 ring-slate-700"
                   />
 
-                  {/* Stamp Highlight Box */}
+                  {/* Stamp Highlight Box on Page 1 */}
                   {letter.blueStamp?.detected && currentPage === 0 && (
                     <div
                       className="absolute border-3 border-blue-500 bg-blue-500/20 rounded-md shadow-lg pointer-events-none"
@@ -226,7 +331,7 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                         height: `${letter.blueStamp.boundingBox?.heightPercent || 10.5}%`,
                       }}
                     >
-                      <span className="absolute -top-6 right-0 bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-md">
+                      <span className="absolute -top-6 right-0 bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-md whitespace-nowrap">
                         الختم الأزرق (مكتشف)
                       </span>
                     </div>
@@ -239,10 +344,16 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 </div>
               )}
             </div>
+
+            {/* Complete copy bar */}
+            <div className="p-2.5 bg-slate-900 border-t border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
+              <span>النسخة الكاملة المحفوظة: {pagesToDisplay.length} صفحات</span>
+              <span className="font-mono text-slate-500">{letter.pdfFileName || 'document.pdf'}</span>
+            </div>
           </div>
 
           {/* Right: Comprehensive Details Panel */}
-          <div className="w-full md:w-5/12 bg-white flex flex-col min-h-0 overflow-y-auto p-6 space-y-5">
+          <div className="w-full md:w-5/12 bg-white flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
             {/* 🟦 BLUE STAMP HANDWRITTEN SECTION */}
             {letter.blueStamp?.detected ? (
               <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 shadow-xs space-y-3">
@@ -272,7 +383,7 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                             'stampNum'
                           )
                         }
-                        className="text-blue-400 hover:text-blue-700 p-1"
+                        className="text-blue-400 hover:text-blue-700 p-1 cursor-pointer"
                         title="نسخ"
                       >
                         {copiedField === 'stampNum' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
@@ -353,7 +464,7 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 <div>
                   <span className="text-slate-600 font-bold block mb-1.5 flex items-center gap-1">
                     <Tag className="w-3.5 h-3.5 text-blue-600" />
-                    <span>الكلمات المفتاحية المستخرجة (من أول صفحتين):</span>
+                    <span>الكلمات المفتاحية المستخرجة بالذكاء الاصطناعي:</span>
                   </span>
                   <div className="flex flex-wrap gap-1.5">
                     {letter.keywords.map((kw, i) => (
